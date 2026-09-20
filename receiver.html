@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Secure QR Receiver</title>
+<style>
+  :root {
+    --bg: #0D1117;
+    --panel: #161B22;
+    --border: #1F2933;
+    --fg: #E6EDF3;
+    --dim: #8B949E;
+    --ok: #4ADE80;
+    --err: #F87171;
+    --wait: #58A6FF;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px 16px 32px;
+    min-height: 100vh;
+  }
+  header {
+    text-align: center;
+    padding: 10px 0 16px;
+  }
+  header .eyebrow {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  header h1 {
+    font-size: 17px;
+    margin: 4px 0 0;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .code-entry {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .code-entry label {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
+    margin-bottom: 8px;
+  }
+  .code-entry input {
+    width: 100%;
+    background: #0D1117;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 18px;
+    letter-spacing: 0.08em;
+    padding: 10px 12px;
+    border-radius: 8px;
+    text-transform: uppercase;
+  }
+  .code-entry input:focus { outline: 1px solid var(--wait); }
+
+  button {
+    font-family: inherit;
+    font-size: 14px;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 16px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 10px;
+  }
+  .btn-primary { background: var(--ok); color: #06210F; font-weight: 600; }
+  .btn-primary:disabled { background: #2D3A45; color: var(--dim); cursor: not-allowed; }
+  .btn-secondary { background: var(--panel); color: var(--fg); border: 1px solid var(--border); }
+
+  .scanner-box {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    display: none;
+  }
+  .scanner-box.active { display: block; }
+  video, canvas.overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  .scan-frame {
+    position: absolute;
+    inset: 12%;
+    border: 2px solid var(--ok);
+    border-radius: 12px;
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  .status-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 14px 0 6px;
+    font-size: 13px;
+  }
+  .status-line .state { color: var(--wait); }
+  .status-line .state.ok { color: var(--ok); }
+  .status-line .state.err { color: var(--err); }
+
+  .meter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin: 8px 0 16px;
+  }
+  .meter .cell {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--border);
+  }
+  .meter .cell.filled { background: var(--ok); }
+
+  .log {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    height: 150px;
+    overflow-y: auto;
+    font-size: 11.5px;
+    color: var(--dim);
+    line-height: 1.6;
+  }
+  .log .line { white-space: pre-wrap; word-break: break-word; }
+  .log .line.ok { color: var(--ok); }
+  .log .line.err { color: var(--err); }
+
+  .result-box {
+    background: var(--panel);
+    border: 1px solid var(--ok);
+    border-radius: 10px;
+    padding: 16px;
+    margin-top: 14px;
+    display: none;
+  }
+  .result-box.show { display: block; }
+  .result-box .filename { font-size: 14px; color: var(--fg); margin-bottom: 10px; word-break: break-all; }
+  .result-box .verified { color: var(--ok); font-size: 12px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">CRYPTOGRAPHIC SECURITY GATEWAY</div>
+    <h1>Optical QR Receiver</h1>
+  </header>
+
+  <div class="code-entry" id="codeEntry">
+    <label>Enter the receiving code shown on the sender's screen</label>
+    <input type="text" id="codeInput" maxlength="12" placeholder="E.G. 3F9A1B7C2D8E" autocomplete="off" autocapitalize="characters">
+    <button class="btn-primary" id="startBtn">Start Scanning</button>
+  </div>
+
+  <div class="scanner-box" id="scannerBox">
+    <video id="video" playsinline muted></video>
+    <canvas class="overlay" id="overlay"></canvas>
+    <div class="scan-frame"></div>
+  </div>
+
+  <div class="status-line" id="statusLine" style="display:none;">
+    <span>Session <span id="sessionLabel">--</span></span>
+    <span class="state" id="stateLabel">waiting for frames</span>
+  </div>
+
+  <div class="meter" id="meter"></div>
+
+  <div class="log" id="log"></div>
+
+  <div class="result-box" id="resultBox">
+    <div class="filename" id="resultFilename"></div>
+    <div class="verified" id="resultVerified"></div>
+    <button class="btn-primary" id="downloadBtn">Download File</button>
+    <button class="btn-secondary" id="resetBtn">Scan Another File</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+<script>
+// ============================================================
+// Must match sender.py's SHARED_KEY_HEX exactly (32 bytes / 64 hex chars).
+// ============================================================
+const SHARED_KEY_HEX = "3b1a9c4e7d2f8601b5a3c9d0e4f2178a6b3c5d7e9f0a1b2c3d4e5f60718293a4";
+
+// ---- small helpers ----
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+function log(msg, cls) {
+  const line = document.createElement("div");
+  line.className = "line" + (cls ? " " + cls : "");
+  line.textContent = msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function hexToBytes(hex) {
+  const arr = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < arr.length; i++) arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return arr;
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+function concatBytes(...arrs) {
+  const total = arrs.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrs) { out.set(a, offset); offset += a.length; }
+  return out;
+}
+function bytesEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// ---- frame format (must mirror crypto_utils.py HEADER_STRUCT) ----
+// [ receiving_code 6B ][ frame_number 2B BE ][ total_frames 2B BE ]
+// [ chunk_hash 4B ][ nonce 12B ][ tag 16B ][ chunk_ciphertext ... ]
+const HEADER_SIZE = 6 + 2 + 2 + 4 + 12 + 16;
+
+function parseFrame(bytes) {
+  let o = 0;
+  const receiving_code = bytes.slice(o, o + 6); o += 6;
+  const frame_number = (bytes[o] << 8) | bytes[o + 1]; o += 2;
+  const total_frames = (bytes[o] << 8) | bytes[o + 1]; o += 2;
+  const chunk_hash = bytes.slice(o, o + 4); o += 4;
+  const nonce = bytes.slice(o, o + 12); o += 12;
+  const tag = bytes.slice(o, o + 16); o += 16;
+  const chunk_ciphertext = bytes.slice(o);
+  return { receiving_code, frame_number, total_frames, chunk_hash, nonce, tag, chunk_ciphertext };
+}
+
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return new Uint8Array(digest);
+}
+
+// Recreate the frame-level MAC check: AES-GCM with mac_key = SHA256(receiving_code + "frame-mac")[:16],
+// AAD = receiving_code + frame_number(2B) + total_frames(2B) + chunk_hash, ciphertext = "" (MAC-only use).
+async function verifyFrameTag(parsed, expectedCode) {
+  if (!bytesEqual(parsed.receiving_code, expectedCode)) {
+    return { ok: false, reason: "INVALID SESSION (receiving code mismatch)" };
+  }
+  const recomputedHash = (await sha256(parsed.chunk_ciphertext)).slice(0, 4);
+  if (!bytesEqual(recomputedHash, parsed.chunk_hash)) {
+    return { ok: false, reason: "INTEGRITY FAILURE (chunk hash mismatch)" };
+  }
+
+  const macKeyFull = await sha256(concatBytes(parsed.receiving_code, new TextEncoder().encode("frame-mac")));
+  const macKeyBytes = macKeyFull.slice(0, 16);
+  const macKey = await crypto.subtle.importKey("raw", macKeyBytes, { name: "AES-GCM" }, false, ["decrypt"]);
+
+  const aad = concatBytes(
+    parsed.receiving_code,
+    new Uint8Array([(parsed.frame_number >> 8) & 0xff, parsed.frame_number & 0xff]),
+    new Uint8Array([(parsed.total_frames >> 8) & 0xff, parsed.total_frames & 0xff]),
+    parsed.chunk_hash
+  );
+  // Sender computed the tag over (aad + chunk_ciphertext) as "data", encrypting empty plaintext.
+  // In WebCrypto, decrypt(ciphertext=tag-only, tag appended) with matching AAD verifies it.
+  try {
+    await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: parsed.nonce, additionalData: concatBytes(aad, parsed.chunk_ciphertext), tagLength: 128 },
+      macKey,
+      parsed.tag // ciphertext is empty, so the "ciphertext" input is just the tag
+    );
+  } catch (e) {
+    return { ok: false, reason: "AUTHENTICATION FAILURE (tag invalid — possible tampering)" };
+  }
+  return { ok: true, reason: "OK" };
+}
+
+async function decryptWholeFile(ciphertextWithTag, keyBytes, nonce) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"]);
+  const plaintextBuf = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: nonce, tagLength: 128 },
+    key,
+    ciphertextWithTag // WebCrypto expects ciphertext+tag concatenated — matches our Python layout
+  );
+  return new Uint8Array(plaintextBuf);
+}
+
+// ============================================================
+// App state
+// ============================================================
+let expectedCode = null;       // Uint8Array(6)
+let totalDataFrames = null;    // from metadata frame
+let receivedChunks = {};       // frame_number -> Uint8Array
+let seenFrameNumbers = new Set(); // for replay detection
+let metadata = null;           // { filename, fileNonce, originalHash, totalChunks }
+let stream = null;
+let scanning = false;
+let rafId = null;
+
+function updateMeter() {
+  const meter = $("meter");
+  meter.innerHTML = "";
+  if (totalDataFrames === null) return;
+  for (let i = 0; i < totalDataFrames; i++) {
+    const cell = document.createElement("div");
+    cell.className = "cell" + (receivedChunks[i] ? " filled" : "");
+    meter.appendChild(cell);
+  }
+}
+
+function setState(text, cls) {
+  const el = $("stateLabel");
+  el.textContent = text;
+  el.className = "state" + (cls ? " " + cls : "");
+}
+
+async function handleDecodedText(text) {
+  let frameBytes;
+  try {
+    frameBytes = b64ToBytes(text);
+  } catch (e) {
+    return; // not our QR format, ignore silently (could be a stray QR in frame)
+  }
+  if (frameBytes.length < HEADER_SIZE) return;
+
+  const parsed = parseFrame(frameBytes);
+
+  const result = await verifyFrameTag(parsed, expectedCode);
+  if (!result.ok) {
+    log(`✗ frame rejected — ${result.reason}`, "err");
+    return;
+  }
+
+  const isMetadata = parsed.frame_number === 0xFFFF;
+
+  if (isMetadata) {
+    if (metadata) return; // already have it
+    const payload = parsed.chunk_ciphertext;
+    let o = 0;
+    const nameLen = payload[o]; o += 1;
+    const filename = new TextDecoder().decode(payload.slice(o, o + nameLen)); o += nameLen;
+    const fileNonce = payload.slice(o, o + 12); o += 12;
+    const originalHash = payload.slice(o, o + 32); o += 32;
+    const totalChunks = (payload[o] << 8) | payload[o + 1];
+    metadata = { filename, fileNonce, originalHash, totalChunks };
+    totalDataFrames = totalChunks;
+    updateMeter();
+    log(`✓ metadata verified — file "${filename}", ${totalChunks} frame(s) expected`, "ok");
+    return;
+  }
+
+  // Regular data frame
+  if (seenFrameNumbers.has(parsed.frame_number)) {
+    log(`✗ frame ${parsed.frame_number} REPLAY DETECTED — already received, ignoring`, "err");
+    return;
+  }
+  seenFrameNumbers.add(parsed.frame_number);
+  receivedChunks[parsed.frame_number] = parsed.chunk_ciphertext;
+  if (totalDataFrames === null) totalDataFrames = parsed.total_frames;
+  updateMeter();
+  log(`✓ frame ${parsed.frame_number + 1}/${parsed.total_frames} verified and stored`, "ok");
+
+  await maybeFinish();
+}
+
+async function maybeFinish() {
+  if (!metadata) return;
+  if (Object.keys(receivedChunks).length < metadata.totalChunks) {
+    setState(`${Object.keys(receivedChunks).length}/${metadata.totalChunks} frames received`, "");
+    return;
+  }
+  // All chunks present — reassemble in order
+  const parts = [];
+  for (let i = 0; i < metadata.totalChunks; i++) {
+    if (!receivedChunks[i]) { setState("frame " + i + " missing", "err"); return; }
+    parts.push(receivedChunks[i]);
+  }
+  const ciphertextWithTag = concatBytes(...parts);
+
+  setState("decrypting…", "");
+  log("all frames received — decrypting and verifying file hash…");
+
+  let plaintext;
+  try {
+    plaintext = await decryptWholeFile(ciphertextWithTag, hexToBytes(SHARED_KEY_HEX), metadata.fileNonce);
+  } catch (e) {
+    setState("DECRYPTION FAILED", "err");
+    log("✗ AES-GCM decryption/verification failed — file may be corrupted or key mismatch", "err");
+    return;
+  }
+
+  const computedHash = await sha256(plaintext);
+  const hashOk = bytesEqual(computedHash, metadata.originalHash);
+
+  stopScanning();
+  setState(hashOk ? "TRANSFER COMPLETE" : "HASH MISMATCH", hashOk ? "ok" : "err");
+  log(hashOk ? "✓ SHA-256 verified — file authentic and intact" : "✗ SHA-256 mismatch — file corrupted or tampered", hashOk ? "ok" : "err");
+
+  showResult(metadata.filename, plaintext, hashOk);
+}
+
+function showResult(filename, plaintextBytes, hashOk) {
+  $("resultBox").classList.add("show");
+  $("resultFilename").textContent = filename;
+  $("resultVerified").textContent = hashOk
+    ? "✓ Integrity verified (SHA-256 match)"
+    : "✗ Integrity check failed — do not trust this file";
+  $("resultVerified").style.color = hashOk ? "var(--ok)" : "var(--err)";
+
+  const blob = new Blob([plaintextBytes]);
+  const url = URL.createObjectURL(blob);
+  $("downloadBtn").onclick = () => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "received_file";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+}
+
+// ============================================================
+// Camera + scanning loop
+// ============================================================
+async function startScanning() {
+  const codeStr = $("codeInput").value.trim().toUpperCase();
+  if (!/^[0-9A-F]{12}$/.test(codeStr)) {
+    alert("Enter the 12-character receiving code exactly as shown on the sender's screen.");
+    return;
+  }
+  expectedCode = hexToBytes(codeStr);
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (e) {
+    alert("Camera access denied or unavailable. Please allow camera permission and reload.");
+    return;
+  }
+
+  $("codeEntry").style.display = "none";
+  $("scannerBox").classList.add("active");
+  $("statusLine").style.display = "flex";
+  $("sessionLabel").textContent = codeStr;
+  setState("scanning…", "");
+
+  const video = $("video");
+  video.srcObject = stream;
+  await video.play();
+
+  scanning = true;
+  scanLoop();
+}
+
+function stopScanning() {
+  scanning = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  $("scannerBox").classList.remove("active");
+}
+
+function scanLoop() {
+  if (!scanning) return;
+  const video = $("video");
+  const overlay = $("overlay");
+
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+    const ctx = overlay.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
+    const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+    if (code && code.data) {
+      handleDecodedText(code.data);
+    }
+  }
+  rafId = requestAnimationFrame(scanLoop);
+}
+
+function resetAll() {
+  expectedCode = null;
+  totalDataFrames = null;
+  receivedChunks = {};
+  seenFrameNumbers = new Set();
+  metadata = null;
+  logEl.innerHTML = "";
+  $("meter").innerHTML = "";
+  $("resultBox").classList.remove("show");
+  $("codeInput").value = "";
+  $("codeEntry").style.display = "block";
+  $("statusLine").style.display = "none";
+  setState("waiting for frames", "");
+}
+
+$("startBtn").addEventListener("click", startScanning);
+$("resetBtn").addEventListener("click", resetAll);
+</script>
+</body>
+</html>
